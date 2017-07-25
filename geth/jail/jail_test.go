@@ -3,6 +3,7 @@ package jail_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -163,6 +164,71 @@ func (s *JailTestSuite) TestJailTimeout() {
 
 	require.NoError(err)
 	require.NotNil(res)
+}
+
+func (s *JailTestSuite) TestJailLoop() {
+	require := s.Require()
+	require.NotNil(s.jail)
+
+	s.StartTestNode(params.RopstenNetworkID)
+	defer s.StopTestNode()
+
+	// load Status JS and add test command to it
+	s.jail.BaseJS(baseStatusJSCode)
+	s.jail.Parse(testChatID, ``)
+
+	newCell := s.jail.NewJailCell(testChatID)
+	require.NotNil(newCell)
+
+	execr := newCell.Executor()
+
+	items := make(chan string)
+
+	err := newCell.CellVM().Set("__captureResponse", func(val string) otto.Value {
+		go func() { items <- val }()
+
+		return otto.UndefinedValue()
+	})
+
+	require.NoError(err)
+
+	go func() {
+		id, err := execr.Exec(`
+			var hiCnt = 0;
+
+			function sayHi () {
+				__captureResponse("Hi " + hiCnt);
+				hiCnt++;
+			}
+
+			var id = setInterval(function () {
+				sayHi();
+			}, 1000);
+
+		`)
+
+		fmt.Printf("Exec: %+q\n", id)
+
+		require.NoError(err)
+	}()
+
+	var count int
+
+	for {
+		if count >= 3 {
+			break
+		}
+
+		select {
+		case received := <-items:
+			fmt.Printf("Received data: %+q\n", received)
+			count++
+			break
+
+		case <-time.After(5 * time.Second):
+			require.Fail("Failed to received event response")
+		}
+	}
 }
 
 func (s *JailTestSuite) TestJailFetch() {
